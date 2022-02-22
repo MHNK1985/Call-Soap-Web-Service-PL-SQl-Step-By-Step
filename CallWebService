@@ -1,0 +1,99 @@
+PROCEDURE CallWebService(MyEmpId IN NUMBER,rslt OUT VARCHAR2) IS
+l_http_request        utl_http.req;
+l_http_response       utl_http.resp;
+l_buffer_size         NUMBER(10) := 512;
+l_string_request      VARCHAR2(8000);
+l_substring_msg       VARCHAR2(8000);
+l_raw_data            RAW(512);
+l_clob_response       CLOB;
+l_host_name           VARCHAR2(8000) := '192.168.1.50'; -- Your host_name 
+l_resp_xml            xmltype;
+l_namespace_soap      VARCHAR2(8000) := 'xmlns="http://www.tempuri.org/FindEmpName"'; -- Your NameSpace Soap 
+l_resp_xml_text       VARCHAR2(8000);
+BEGIN
+    l_string_request :='<?xml version="1.0" encoding="utf-8"?>
+                        <soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+                            <soap12:Body>
+                                <FindEmpName xmlns="http://tempuri.org/">
+                                    <empid>'|| MyEmpId ||' </empid>
+                                </FindEmpName>
+                        </soap12:Body>
+                        </soap12:Envelope>
+                       '; -- Your String Request 
+    
+    utl_http.set_transfer_timeout(60);
+    l_http_request := utl_http.begin_request(url          => 'http://192.168.1.50:9762/test.asmx', -- Your url 
+                                             method       => 'POST',
+                                             http_version => 'HTTP/1.1'
+                                            );
+    utl_http.set_header(l_http_request,
+                        'User-Agent',
+                        'Mozilla/4.0'
+                       );
+    utl_http.set_header(l_http_request,
+                        'Connection',
+                        'close'
+                       );
+    utl_http.set_header(l_http_request,
+                        'Content-Type',
+                        'application/soap+xml; charset=utf-8'
+                       );
+    utl_http.set_header(l_http_request,
+                        'Content-Length',
+                        length(l_string_request)
+                       );
+    <<request_loop>>
+    FOR i IN 0 .. ceil(length(l_string_request) / l_buffer_size) - 1
+    LOOP
+        l_substring_msg := substr(l_string_request,i * l_buffer_size + 1,l_buffer_size);
+        BEGIN
+            l_raw_data := utl_raw.cast_to_raw(l_substring_msg);
+            utl_http.write_raw(r    => l_http_request,
+                               data => l_raw_data
+                              );
+        EXCEPTION
+            WHEN no_data_found THEN
+                EXIT request_loop;
+        END;
+    END LOOP request_loop;
+    l_http_response := utl_http.get_response(l_http_request);
+    dbms_output.put_line('Response> status_code: "' || l_http_response.status_code || '"');
+    dbms_output.put_line('Response> reason_phrase: "' ||l_http_response.reason_phrase || '"');
+    dbms_output.put_line('Response> http_version: "' || l_http_response.http_version || '"');
+    BEGIN
+        <<response_loop>>
+        LOOP
+            utl_http.read_raw(l_http_response,
+                              l_raw_data,
+                              l_buffer_size
+                             );
+            l_clob_response := l_clob_response||utl_raw.cast_to_varchar2(l_raw_data);
+        END LOOP response_loop;
+    EXCEPTION
+        WHEN utl_http.end_of_body THEN
+            utl_http.end_response(l_http_response);
+    END;
+    IF (l_http_response.status_code = 200) THEN
+        -- Create XML type from response text
+        --dbms_output.put_line(chr(10)||chr(10)||to_char(l_clob_response)||chr(10)||chr(10));
+        l_resp_xml := xmltype.createxml(l_clob_response);
+        l_resp_xml_text := xmltype.createxml(l_clob_response).getstringval();
+        
+       
+        
+        SELECT EXTRACTVALUE(XMLTYPE(l_resp_xml_text),
+                            '//FindEmpNameResult',
+                            'xmlns="http://tempuri.org/"'
+                           )
+        into   rslt
+        from   dual; 
+        dbms_output.put_line('Response from webservices:');
+    END IF;
+    dbms_output.put_line(rslt);
+    IF l_http_request.private_hndl IS NOT NULL THEN
+        utl_http.end_request(l_http_request);
+    END IF;
+    IF l_http_response.private_hndl IS NOT NULL THEN
+        utl_http.end_response(l_http_response);
+    END IF;
+END; 
